@@ -67,7 +67,9 @@ func startReceiver(name, host, port string, wg *sync.WaitGroup) {
 			fmt.Println("Failed to accept connection: " + err.Error())
 			continue
 		}
-		conn.Close()
+		sConn := serverConn(name)
+		interceptor := &Interceptor{conn, sConn}
+		interceptor.Start()
 	}
 	listener.Close()
 	wg.Done()
