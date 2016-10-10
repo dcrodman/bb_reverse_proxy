@@ -11,18 +11,18 @@ import (
 var (
 	host         = flag.String("host", "127.0.0.1", "host")
 	portMappings = map[string]string{
-		"Patch":     "11000",
-		"Data":      "11001",
-		"Login":     "12000",
-		"Character": "12001",
+		"PATCH":     "11000",
+		"DATA":      "11001",
+		"LOGIN":     "12000",
+		"CHARACTER": "12001",
 	}
 
 	serverHost         = flag.String("serverhost", "127.0.0.1", "server host")
 	serverPortMappings = map[string]string{
-		"Patch":     "11010",
-		"Data":      "11011",
-		"Login":     "12010",
-		"Character": "12011",
+		"PATCH":     "11010",
+		"DATA":      "11011",
+		"LOGIN":     "12010",
+		"CHARACTER": "12011",
 	}
 )
 
@@ -40,17 +40,20 @@ func main() {
 	wg.Wait()
 }
 
-// Open a connection to the mapped server
+// Open a connection to a mapped server by name.
 func serverConn(serverName string) net.Conn {
 	conn, err := net.Dial("tcp", *serverHost+":"+serverPortMappings[serverName])
 	if err != nil {
 		fmt.Printf("Server connection failed: %s\n", err.Error())
+		// TODO: This should only be an exit in the initial check
 		os.Exit(1)
 	}
 	return conn
 }
 
-// Open up connections for any clients.
+// Start a TCP listener on the specified host:port. When clients connect, create
+// a connection to the corresponding server and set up an InterceptService to
+// handle the communication between them.
 func startReceiver(name, host, port string, wg *sync.WaitGroup) {
 	listener, err := net.Listen("tcp", host+":"+port)
 	if err != nil {
