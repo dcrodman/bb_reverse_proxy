@@ -2,19 +2,20 @@ package main
 
 import (
 	"fmt"
+	"github.com/dcrodman/archon/util"
+	crypto "github.com/dcrodman/bb_reverse_proxy/encryption"
 	"net"
 	"sync"
 )
 
-const (
-	PatchWelcomeType = 0x02
-	LoginWelcomeType = 0x03
-)
+type Header struct {
+	Size uint16
+	Type uint16
+}
 
 // Welcome packet with encryption vectors sent to the client upon initial connection.
 type PatchWelcomePkt struct {
-	Size         uint16
-	Type         uint16
+	Header
 	Copyright    [44]byte
 	Padding      [20]byte
 	ServerVector [4]byte
@@ -23,8 +24,7 @@ type PatchWelcomePkt struct {
 
 // Welcome packet with encryption vectors sent to the client upon initial connection.
 type WelcomePkt struct {
-	Size         uint16
-	Type         uint16
+	Header
 	Flags        uint32
 	Copyright    [96]byte
 	ServerVector [48]byte

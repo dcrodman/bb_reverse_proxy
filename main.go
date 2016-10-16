@@ -41,8 +41,9 @@ func main() {
 }
 
 // Open a connection to a mapped server by name.
-func serverConn(serverName string) net.Conn {
-	conn, err := net.Dial("tcp", *serverHost+":"+serverPortMappings[serverName])
+func serverConn(serverName string) *net.TCPConn {
+	addr, _ := net.ResolveTCPAddr("tcp", *serverHost+":"+serverPortMappings[serverName])
+	conn, err := net.DialTCP("tcp", nil, addr)
 	if err != nil {
 		fmt.Printf("Server connection failed: %s\n", err.Error())
 		// TODO: This should only be an exit in the initial check
@@ -55,14 +56,19 @@ func serverConn(serverName string) net.Conn {
 // a connection to the corresponding server and set up an InterceptService to
 // handle the communication between them.
 func startReceiver(name, host, port string, wg *sync.WaitGroup) {
-	listener, err := net.Listen("tcp", host+":"+port)
+	addr, err := net.ResolveTCPAddr("tcp", host+":"+port)
+	if err != nil {
+		fmt.Println("Failed to start proxy on %s:%s; error: \n", host, port, err.Error())
+		os.Exit(2)
+	}
+	listener, err := net.ListenTCP("tcp", addr)
 	if err != nil {
 		fmt.Println("Failed to start proxy on %s:%s; error: \n", host, port, err.Error())
 		os.Exit(2)
 	}
 	fmt.Printf("Opening %s proxy on %s:%s\n", name, host, port)
 	for {
-		conn, err := listener.Accept()
+		conn, err := listener.AcceptTCP()
 		if err != nil {
 			fmt.Println("Failed to accept connection: " + err.Error())
 			continue
