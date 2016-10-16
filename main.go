@@ -68,7 +68,8 @@ func startReceiver(name, host, port string, wg *sync.WaitGroup) {
 		fmt.Println("Failed to start proxy on %s:%s; error: \n", host, port, err.Error())
 		os.Exit(2)
 	}
-	fmt.Printf("Opening %s proxy on %s:%s\n", name, host, port)
+	fmt.Printf("Forwarding %s connections on %s:%s to %s:%s\n",
+		name, host, port, host, serverPortMappings[name])
 	for {
 		conn, err := listener.AcceptTCP()
 		if err != nil {
