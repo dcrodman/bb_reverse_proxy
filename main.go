@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
+	"runtime"
 	"sync"
 )
 
@@ -31,7 +33,7 @@ func main() {
 		c := serverConn(s)
 		c.Close()
 	}
-
+	go interceptKill()
 	wg := new(sync.WaitGroup)
 	for s, p := range portMappings {
 		wg.Add(1)
@@ -79,4 +81,14 @@ func startReceiver(name, host, port string, wg *sync.WaitGroup) {
 	}
 	listener.Close()
 	wg.Done()
+}
+
+func interceptKill() {
+	signalChan := make(chan os.Signal)
+	signal.Notify(signalChan, os.Kill, os.Interrupt)
+	<-signalChan
+	stackBuf := make([]byte, 10000)
+	runtime.Stack(stackBuf, true)
+	fmt.Println(string(stackBuf))
+	os.Exit(1)
 }
