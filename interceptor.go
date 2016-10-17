@@ -50,7 +50,7 @@ func (i *Interceptor) Start() {
 		serverAddr := i.serverConn.RemoteAddr().String()
 
 		// Intercept the encryption vectors so that we can decrypt traffic.
-		vectorBuf := make([]byte, 128)
+		vectorBuf := make([]byte, 256)
 		bytes, _ := i.serverConn.Read(vectorBuf)
 		clientCrypt, serverCrypt, hSize := buildCrypts(vectorBuf)
 
@@ -59,7 +59,9 @@ func (i *Interceptor) Start() {
 		i.crypts[clientAddr] = clientCrypt
 		i.crypts[serverAddr] = serverCrypt
 
-		logPacket(vectorBuf[:bytes], bytes, clientAddr, "server")
+		fmt.Printf("Sending to %s from server\n", clientAddr)
+		util.PrintPayload(vectorBuf[:bytes], bytes)
+		fmt.Println()
 		i.clientConn.Write(vectorBuf[:bytes])
 
 		i.wg.Add(2)
@@ -73,6 +75,7 @@ func (i *Interceptor) Start() {
 // and logging it before sending it along.
 func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 	toAddr := to.RemoteAddr().String()
+	crypt := i.crypts[from.RemoteAddr().String()]
 	for {
 		buf := make([]byte, 65535)
 		bytes, err := from.Read(buf)
@@ -80,7 +83,14 @@ func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 			fmt.Printf("Error reading from %s: %s", toAddr, err.Error())
 			break
 		}
-		logPacket(buf, bytes, toAddr, fromName)
+		decryptedBuf := make([]byte, bytes)
+		copy(decryptedBuf, buf)
+		crypt.Decrypt(decryptedBuf, uint32(bytes))
+
+		fmt.Printf("Sending to %s from %s\n", toAddr, fromName)
+		util.PrintPayload(decryptedBuf, int(bytes))
+		fmt.Println()
+
 		to.Write(buf[:bytes])
 	}
 	i.wg.Done()
@@ -102,10 +112,4 @@ func buildCrypts(buf []byte) (c, s *crypto.PSOCrypt, hdrSize uint16) {
 		sCrypt := crypto.NewBBCrypt(welcomePkt.ServerVector)
 		return cCrypt, sCrypt, 8
 	}
-}
-
-func logPacket(buf []byte, l int, toAddr string, fromName string) {
-	fmt.Printf("Sending to %s from %s\n", toAddr, fromName)
-	util.PrintPayload(buf, int(l))
-	fmt.Println()
 }
