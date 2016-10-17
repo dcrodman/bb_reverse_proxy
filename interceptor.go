@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"github.com/dcrodman/archon/util"
 	crypto "github.com/dcrodman/bb_reverse_proxy/encryption"
+	"io"
 	"net"
+	"strings"
 	"sync"
+	"time"
 )
 
 type Header struct {
@@ -33,6 +36,7 @@ type Interceptor struct {
 	clientConn *net.TCPConn
 	serverConn *net.TCPConn
 	wg         sync.WaitGroup
+	shouldDie  bool
 
 	headerSize uint16
 	crypts     map[string]*crypto.PSOCrypt
@@ -77,10 +81,22 @@ func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 	toAddr := to.RemoteAddr().String()
 	crypt := i.crypts[from.RemoteAddr().String()]
 	for {
+		oneSec := time.Now().Add(time.Second)
+		from.SetReadDeadline(oneSec)
+
 		buf := make([]byte, 65535)
 		bytes, err := from.Read(buf)
-		if err != nil {
-			fmt.Printf("Error reading from %s: %s", toAddr, err.Error())
+		if err == io.EOF {
+			fmt.Println(fromName + " has disconnected")
+			break
+		} else if err != nil && strings.Contains(err.Error(), "timeout") {
+			// A timeout is our only chance to see if the connection is dead.
+			if i.shouldDie {
+				break
+			}
+			continue
+		} else if err != nil {
+			fmt.Printf("Error reading from %s: %s\n", toAddr, err.Error())
 			break
 		}
 		decryptedBuf := make([]byte, bytes)
@@ -93,6 +109,7 @@ func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 
 		to.Write(buf[:bytes])
 	}
+	i.shouldDie = true
 	i.wg.Done()
 }
 
