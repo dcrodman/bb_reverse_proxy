@@ -36,7 +36,7 @@ type Interceptor struct {
 	clientConn *net.TCPConn
 	serverConn *net.TCPConn
 	wg         sync.WaitGroup
-	shouldDie  bool
+	stop       bool
 
 	headerSize uint16
 	crypts     map[string]*crypto.PSOCrypt
@@ -91,7 +91,7 @@ func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 			break
 		} else if err != nil && strings.Contains(err.Error(), "timeout") {
 			// A timeout is our only chance to see if the connection is dead.
-			if i.shouldDie {
+			if i.stop {
 				break
 			}
 			continue
@@ -109,7 +109,7 @@ func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 
 		to.Write(buf[:bytes])
 	}
-	i.shouldDie = true
+	i.stop = true
 	i.wg.Done()
 }
 
