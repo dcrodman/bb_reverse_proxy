@@ -13,7 +13,6 @@ type Header struct {
 	Type uint16
 }
 
-// Welcome packet with encryption vectors sent to the client upon initial connection.
 type PatchWelcomePkt struct {
 	Header
 	Copyright    [44]byte
@@ -22,7 +21,6 @@ type PatchWelcomePkt struct {
 	ClientVector [4]byte
 }
 
-// Welcome packet with encryption vectors sent to the client upon initial connection.
 type WelcomePkt struct {
 	Header
 	Flags        uint32
@@ -34,6 +32,10 @@ type WelcomePkt struct {
 type Interceptor struct {
 	clientConn *net.TCPConn
 	serverConn *net.TCPConn
+	wg         sync.WaitGroup
+
+	headerSize uint16
+	crypts     map[string]*crypto.PSOCrypt
 }
 
 // Set up the bi-directional communication and intercept hook for
@@ -44,54 +46,47 @@ func (i *Interceptor) Start() {
 			i.clientConn.Close()
 			i.serverConn.Close()
 		}()
-		// Intercept the encryption vectors
-		var headerSize uint16
-		var clientCrypt, serverCrypt *crypto.PSOCrypt
-		buf := make([]byte, 256)
-		bytes, _ := i.serverConn.Read(buf)
-		clientCrypt, serverCrypt, headerSize = i.buildCrypts(buf)
+		clientAddr := i.clientConn.RemoteAddr().String()
+		serverAddr := i.serverConn.RemoteAddr().String()
 
-		// Client uses the client vector to send data, the server uses the server
-		// one. In order to reuse the packet functionality from Client, we can
-		// just reverse them and the cryptographic part should work.
-		client := NewClient(i.clientConn, headerSize, clientCrypt, serverCrypt)
-		server := NewClient(i.serverConn, headerSize, serverCrypt, clientCrypt)
-		fmt.Printf("From %s:%s (server)\n", server.ipAddr, server.port)
-		util.PrintPayload(buf[:bytes], bytes)
-		fmt.Println()
-		client.Send(buf[:bytes])
+		// Intercept the encryption vectors so that we can decrypt traffic.
+		vectorBuf := make([]byte, 128)
+		bytes, _ := i.serverConn.Read(vectorBuf)
+		clientCrypt, serverCrypt, hSize := buildCrypts(vectorBuf)
 
-		wg := new(sync.WaitGroup)
-		wg.Add(2)
-		go func() {
-			for {
-				serverBuf := make([]byte, 1024)
-				bytes, err := i.serverConn.Read(serverBuf)
-				if err != nil {
-					fmt.Println("Error reading from server" + err.Error())
-					break
-				}
-				logPacketBuf(serverBuf, bytes, "server")
-				i.clientConn.Write(serverBuf[:bytes])
-			}
-		}()
-		go func() {
-			for {
-				clientBuf := make([]byte, 1024)
-				bytes, err := i.clientConn.Read(clientBuf)
-				if err != nil {
-					fmt.Println("Error reading from client: " + err.Error())
-					break
-				}
-				logPacketBuf(clientBuf, bytes, "client")
-				i.serverConn.Write(clientBuf[:bytes])
-			}
-		}()
-		wg.Wait()
+		i.headerSize = hSize
+		i.crypts = make(map[string]*crypto.PSOCrypt, 2)
+		i.crypts[clientAddr] = clientCrypt
+		i.crypts[serverAddr] = serverCrypt
+
+		logPacket(vectorBuf[:bytes], bytes, clientAddr, "server")
+		i.clientConn.Write(vectorBuf[:bytes])
+
+		i.wg.Add(2)
+		go i.forward(i.clientConn, i.serverConn, "client")
+		go i.forward(i.serverConn, i.clientConn, "server")
+		i.wg.Wait()
 	}()
 }
 
-func (interceptor *Interceptor) buildCrypts(buf []byte) (c, s *crypto.PSOCrypt, hdrSize uint16) {
+// Pipe the connection data read from one connection to the other, decrypting
+// and logging it before sending it along.
+func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
+	toAddr := to.RemoteAddr().String()
+	for {
+		buf := make([]byte, 65535)
+		bytes, err := from.Read(buf)
+		if err != nil {
+			fmt.Printf("Error reading from %s: %s", toAddr, err.Error())
+			break
+		}
+		logPacket(buf, bytes, toAddr, fromName)
+		to.Write(buf[:bytes])
+	}
+	i.wg.Done()
+}
+
+func buildCrypts(buf []byte) (c, s *crypto.PSOCrypt, hdrSize uint16) {
 	var header Header
 	util.StructFromBytes(buf, &header)
 	if header.Type == 0x02 {
@@ -109,14 +104,8 @@ func (interceptor *Interceptor) buildCrypts(buf []byte) (c, s *crypto.PSOCrypt, 
 	}
 }
 
-func logPacket(c *Client, msg string) {
-	fmt.Printf("From %s:%s (%s)\n", c.ipAddr, c.port, msg)
-	util.PrintPayload(c.decryptedBuffer, int(c.packetSize))
-	fmt.Println()
-}
-
-func logPacketBuf(buf []byte, l int, msg string) {
-	fmt.Printf("%s\n", msg)
+func logPacket(buf []byte, l int, toAddr string, fromName string) {
+	fmt.Printf("Sending to %s from %s\n", toAddr, fromName)
 	util.PrintPayload(buf, int(l))
 	fmt.Println()
 }

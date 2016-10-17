@@ -77,7 +77,7 @@ func startReceiver(name, host, port string, wg *sync.WaitGroup) {
 			continue
 		}
 		sConn := serverConn(name)
-		interceptor := &Interceptor{conn, sConn}
+		interceptor := &Interceptor{clientConn: conn, serverConn: sConn}
 		interceptor.Start()
 	}
 	listener.Close()
