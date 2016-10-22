@@ -26,14 +26,19 @@ var (
 		"LOGIN":     "12010",
 		"CHARACTER": "12011",
 	}
+
+	dumpStack = flag.Bool("trace", false, "goroutine dump on exit")
 )
 
 func main() {
+	flag.Parse()
 	for s := range serverPortMappings {
 		c := serverConn(s)
 		c.Close()
 	}
-	go interceptKill()
+	if *dumpStack {
+		go interceptKill()
+	}
 	wg := new(sync.WaitGroup)
 	for s, p := range portMappings {
 		wg.Add(1)
