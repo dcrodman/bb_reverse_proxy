@@ -17,6 +17,10 @@ var (
 		"DATA":      "11001",
 		"LOGIN":     "12000",
 		"CHARACTER": "12001",
+		"SHIPGATE":  "13000",
+		"SHIP":      "15001",
+		"BLOCK1":    "15003",
+		"BLOCK2":    "15004",
 	}
 
 	serverHost         = flag.String("serverhost", "127.0.0.1", "server host")
@@ -25,6 +29,10 @@ var (
 		"DATA":      "11011",
 		"LOGIN":     "12010",
 		"CHARACTER": "12011",
+		"SHIPGATE":  "13010",
+		"SHIP":      "15011",
+		"BLOCK1":    "15013",
+		"BLOCK2":    "15014",
 	}
 
 	dumpStack = flag.Bool("trace", false, "goroutine dump on exit")
@@ -33,7 +41,7 @@ var (
 func main() {
 	flag.Parse()
 	for s := range serverPortMappings {
-		c := serverConn(s)
+		c := connectToServer(s)
 		c.Close()
 	}
 	if *dumpStack {
@@ -48,12 +56,11 @@ func main() {
 }
 
 // Open a connection to a mapped server by name.
-func serverConn(serverName string) *net.TCPConn {
+func connectToServer(serverName string) *net.TCPConn {
 	addr, _ := net.ResolveTCPAddr("tcp", *serverHost+":"+serverPortMappings[serverName])
 	conn, err := net.DialTCP("tcp", nil, addr)
 	if err != nil {
 		fmt.Printf("Server connection failed: %s\n", err.Error())
-		// TODO: This should only be an exit in the initial check
 		os.Exit(1)
 	}
 	return conn
@@ -81,7 +88,7 @@ func startReceiver(name, host, port string, wg *sync.WaitGroup) {
 			fmt.Println("Failed to accept connection: " + err.Error())
 			continue
 		}
-		sConn := serverConn(name)
+		sConn := connectToServer(name)
 		interceptor := &Interceptor{clientConn: conn, serverConn: sConn}
 		interceptor.Start()
 	}
