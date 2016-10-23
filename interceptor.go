@@ -15,9 +15,10 @@ import (
 var SessionEnded = errors.New("Session ended")
 
 type Packet struct {
-	size          uint16
 	data          []byte
 	decryptedData []byte
+	size          uint16
+	timestamp     time.Time
 }
 
 type Header struct {
@@ -115,10 +116,7 @@ func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
 			fmt.Printf("Error reading from %s: %s\n", toAddr, err.Error())
 			break
 		}
-		fmt.Printf("Sending to %s from %s\n", toAddr, fromName)
-		util.PrintPayload(packet.decryptedData, int(packet.size))
-		fmt.Println()
-
+		i.logPacket(packet, toAddr, fromName)
 		to.Write(packet.data)
 	}
 	i.stop = true
@@ -145,8 +143,20 @@ func (i *Interceptor) readNextPacket(from *net.TCPConn) (*Packet, error) {
 		buf = append(buf, remBuf...)
 		decrBuf = append(decrBuf, remDecrBuf...)
 	}
-	packet := Packet{data: buf, decryptedData: decrBuf, size: uint16(packetSize)}
+	packet := Packet{
+		data:          buf,
+		decryptedData: decrBuf,
+		size:          uint16(packetSize),
+		timestamp:     time.Now(),
+	}
 	return &packet, err
+}
+
+func (i *Interceptor) logPacket(packet *Packet, toAddr, fromName string) {
+	stamp := packet.timestamp.Format("15:04:05.000")
+	fmt.Printf("[%v] Sending to %s from %s\n", stamp, toAddr, fromName)
+	util.PrintPayload(packet.decryptedData, int(packet.size))
+	fmt.Println()
 }
 
 func (i *Interceptor) readDecrypted(from *net.TCPConn, size int) ([]byte, []byte, error) {
