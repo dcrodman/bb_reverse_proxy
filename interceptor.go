@@ -7,185 +7,121 @@ import (
 	crypto "github.com/dcrodman/bb_reverse_proxy/encryption"
 	"io"
 	"net"
-	"strings"
-	"sync"
 	"time"
 )
 
-var SessionEnded = errors.New("Session ended")
-
-type Packet struct {
-	data          []byte
-	decryptedData []byte
-	size          uint16
-	timestamp     time.Time
-}
-
-type Header struct {
-	Size uint16
-	Type uint16
-}
-
-type PatchWelcomePkt struct {
-	Header
-	Copyright    [44]byte
-	Padding      [20]byte
-	ServerVector [4]byte
-	ClientVector [4]byte
-}
-
-type WelcomePkt struct {
-	Header
-	Flags        uint32
-	Copyright    [96]byte
-	ServerVector [48]byte
-	ClientVector [48]byte
-}
+var sessionEnded = errors.New("Session ended")
 
 type Interceptor struct {
-	clientConn *net.TCPConn
-	serverConn *net.TCPConn
-	wg         sync.WaitGroup
-	stop       bool
+	ServerName string
+	InConn     net.Conn
+	InName     string
+	OutConn    net.Conn
+	OutName    string
 
-	headerSize uint16
-	crypts     map[string]*crypto.PSOCrypt
+	Crypt            *crypto.PSOCrypt
+	HeaderSize       uint16
+	PacketOutputChan chan<- *Packet
+
+	Partner *Interceptor
+	stop    bool
 }
 
-// Set up the bi-directional communication and intercept hook for
-// packets traveling between the client and target server.
-func (i *Interceptor) Start() {
-	go func() {
-		defer func() {
-			i.clientConn.Close()
-			i.serverConn.Close()
-		}()
-		clientAddr := i.clientConn.RemoteAddr().String()
-		serverAddr := i.serverConn.RemoteAddr().String()
-
-		// Intercept the encryption vectors so that we can decrypt traffic.
-		vectorBuf := make([]byte, 256)
-		bytes, _ := i.serverConn.Read(vectorBuf)
-		clientCrypt, serverCrypt, hSize := i.buildCrypts(vectorBuf)
-
-		i.headerSize = hSize
-		i.crypts = make(map[string]*crypto.PSOCrypt, 2)
-		i.crypts[clientAddr] = clientCrypt
-		i.crypts[serverAddr] = serverCrypt
-
-		fmt.Printf("Sending to %s from server\n", clientAddr)
-		util.PrintPayload(vectorBuf[:bytes], bytes)
-		fmt.Println()
-		i.clientConn.Write(vectorBuf[:bytes])
-
-		i.wg.Add(2)
-		go i.forward(i.clientConn, i.serverConn, "client")
-		go i.forward(i.serverConn, i.clientConn, "server")
-		i.wg.Wait()
-	}()
-}
-
-func (i Interceptor) buildCrypts(buf []byte) (c, s *crypto.PSOCrypt, hdrSize uint16) {
-	var header Header
-	util.StructFromBytes(buf, &header)
-	if header.Type == 0x02 {
-		var welcomePkt PatchWelcomePkt
-		util.StructFromBytes(buf, &welcomePkt)
-		cCrypt := crypto.NewPCCrypt(welcomePkt.ClientVector)
-		sCrypt := crypto.NewPCCrypt(welcomePkt.ServerVector)
-		return cCrypt, sCrypt, 4
-	} else {
-		var welcomePkt WelcomePkt
-		util.StructFromBytes(buf, &welcomePkt)
-		cCrypt := crypto.NewBBCrypt(welcomePkt.ClientVector)
-		sCrypt := crypto.NewBBCrypt(welcomePkt.ServerVector)
-		return cCrypt, sCrypt, 8
-	}
-}
-
-func (i *Interceptor) forward(from, to *net.TCPConn, fromName string) {
-	toAddr := to.RemoteAddr().String()
+func (i *Interceptor) Forward() {
+	fromAddr := i.InConn.RemoteAddr().String()
 	for {
-		packet, err := i.readNextPacket(from)
-		if err == SessionEnded {
-			break
-		} else if err == io.EOF {
-			fmt.Println(fromName + " has disconnected")
+		packet, err := i.readNextPacket()
+		if err == sessionEnded || err == io.EOF {
+			fmt.Println("Disconnected " + fromAddr)
+			i.InConn.Close()
+			i.Partner.Kill()
 			break
 		} else if err != nil {
-			fmt.Printf("Error reading from %s: %s\n", toAddr, err.Error())
+			fmt.Printf("Error reading from %s: %s\n", fromAddr, err.Error())
 			break
 		}
-		i.logPacket(packet, toAddr, fromName)
-		to.Write(packet.data)
+
+		packet.fromName = i.InName
+		packet.toName = i.OutName
+		packet.server = i.ServerName
+
+		i.PacketOutputChan <- packet
+		err = i.Send(packet.data, packet.size)
+		if err != nil {
+			fmt.Printf("Disconnecting client (%s)\n", err)
+			break
+		}
 	}
-	i.stop = true
-	i.wg.Done()
 }
 
-func (i *Interceptor) readNextPacket(from *net.TCPConn) (*Packet, error) {
-	headerSize := int(i.headerSize)
-	buf, decrBuf, err := i.readDecrypted(from, headerSize)
+func (i *Interceptor) readNextPacket() (*Packet, error) {
+	// Just read in the header so we know how much data we're expecting.
+	buf := make([]byte, i.HeaderSize)
+	err := i.readBytes(buf, i.HeaderSize)
 	if err != nil {
 		return nil, err
 	}
-	var packetHeader Header
-	util.StructFromBytes(decrBuf, &packetHeader)
 
-	packetSize := int(packetHeader.Size)
-	if packetSize > len(buf) {
-		// Make sure the packet sizes are always a multiple of the header size.
-		packetSize += (packetSize % headerSize)
-		remBuf, remDecrBuf, err := i.readDecrypted(from, packetSize-headerSize)
-		if err != nil {
-			return nil, err
-		}
-		buf = append(buf, remBuf...)
-		decrBuf = append(decrBuf, remDecrBuf...)
+	decryptedBuf := i.decryptData(buf, i.HeaderSize)
+	var packetHeader Header
+	util.StructFromBytes(decryptedBuf, &packetHeader)
+
+	// Now we read in the rest of the packet and append it to what we have.
+	remainingSize := packetHeader.Size - i.HeaderSize
+	remBuf := make([]byte, remainingSize)
+	err = i.readBytes(remBuf, remainingSize)
+	if err != nil {
+		return nil, err
 	}
+	decryptedRemBuf := i.decryptData(remBuf, remainingSize)
+
 	packet := Packet{
-		data:          buf,
-		decryptedData: decrBuf,
-		size:          uint16(packetSize),
+		command:       packetHeader.Type,
+		size:          packetHeader.Size,
+		data:          append(buf, remBuf...),
+		decryptedData: append(decryptedBuf, decryptedRemBuf...),
 		timestamp:     time.Now(),
 	}
 	return &packet, err
 }
 
-func (i *Interceptor) logPacket(packet *Packet, toAddr, fromName string) {
-	stamp := packet.timestamp.Format("15:04:05.000")
-	fmt.Printf("[%v] Sending to %s from %s\n", stamp, toAddr, fromName)
-	util.PrintPayload(packet.decryptedData, int(packet.size))
-	fmt.Println()
-}
+func (i *Interceptor) readBytes(buf []byte, bytesToRead uint16) error {
+	for bytesReceived := uint16(0); bytesReceived < bytesToRead; {
+		// Timeouts give us an opportunity to check if the connection is dead.
+		i.InConn.SetReadDeadline(time.Now().Add(time.Second))
+		bytesRead, err := i.InConn.Read(buf[bytesReceived:bytesToRead])
 
-func (i *Interceptor) readDecrypted(from *net.TCPConn, size int) ([]byte, []byte, error) {
-	buf := make([]byte, size)
-	err := i.readBytes(from, size, buf)
-	if err != nil {
-		return nil, nil, err
-	}
-	decryptedBuf := append(make([]byte, 0), buf...)
-	crypt := i.crypts[from.RemoteAddr().String()]
-	crypt.Decrypt(decryptedBuf, uint32(size))
-
-	return buf, decryptedBuf, err
-}
-
-func (i *Interceptor) readBytes(from *net.TCPConn, bytes int, dest []byte) error {
-	bytesReceived := 0
-	for bytesReceived < bytes {
-		from.SetReadDeadline(time.Now().Add(time.Second))
-		bytesRead, err := from.Read(dest[bytesReceived:bytes])
-		if err != nil && strings.Contains(err.Error(), "timeout") {
-			// Timeouts give us an opportunity to check if the connection is dead.
-			if i.stop {
-				return SessionEnded
+		if err != nil {
+			netErr, ok := err.(net.Error)
+			if ok && netErr.Timeout() && i.stop {
+				return sessionEnded
+			} else if !ok {
+				return err
 			}
-		} else if err != nil {
-			return err
 		}
-		bytesReceived += bytesRead
+		bytesReceived += uint16(bytesRead)
+
 	}
 	return nil
+}
+
+func (i *Interceptor) decryptData(buf []byte, size uint16) []byte {
+	decryptedBuf := append(make([]byte, 0), buf...)
+	i.Crypt.Decrypt(decryptedBuf, uint32(size))
+	return decryptedBuf
+}
+
+func (i *Interceptor) Send(data []byte, size uint16) error {
+	for bytesSent := uint16(0); bytesSent < size; {
+		n, err := i.OutConn.Write(data[bytesSent:size])
+		if err != nil {
+			return err
+		}
+		bytesSent += uint16(n)
+	}
+	return nil
+}
+
+func (i *Interceptor) Kill() {
+	i.stop = true
 }
