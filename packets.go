@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"time"
 )
 
@@ -11,9 +12,10 @@ type Packet struct {
 	decryptedData []byte
 
 	timestamp time.Time
+	server    string
 	fromName  string
 	toName    string
-	server    string
+	destConn  net.Conn
 }
 
 type Header struct {
