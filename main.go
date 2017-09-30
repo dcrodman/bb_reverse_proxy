@@ -8,8 +8,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/signal"
-	"runtime"
 	"strconv"
 	"sync"
 )
@@ -18,7 +16,6 @@ var (
 	host       = flag.String("host", "127.0.0.1", "host")
 	serverHost = flag.String("serverhost", "127.0.0.1", "server host")
 	namesOnly  = flag.Bool("nameonly", false, "only print packet names instead of full data")
-	dumpStack  = flag.Bool("trace", false, "goroutine dump on exit")
 	debugMode  = flag.Bool("debug", false, "verbose logging for dev")
 
 	// Port mappings for handling incoming client connections.
@@ -57,21 +54,6 @@ const displayWidth = 16
 func main() {
 	flag.Parse()
 	log.SetFlags(log.Ltime)
-
-	if *dumpStack {
-		go func() {
-			// Signal handler that will dump goroutines on exit.
-			signalChan := make(chan os.Signal)
-			signal.Notify(signalChan, os.Kill, os.Interrupt)
-			<-signalChan
-
-			stackBuf := make([]byte, 2^16)
-			runtime.Stack(stackBuf, true)
-			fmt.Println(string(stackBuf))
-			os.Exit(1)
-
-		}()
-	}
 
 	for port, name := range portMappings {
 		proxy := &Proxy{
