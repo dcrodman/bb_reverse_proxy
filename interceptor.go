@@ -6,6 +6,7 @@ import (
 	"github.com/dcrodman/archon/util"
 	crypto "github.com/dcrodman/bb_reverse_proxy/encryption"
 	"io"
+	"log"
 	"net"
 	"time"
 )
@@ -48,7 +49,7 @@ func (i *Interceptor) Forward() {
 
 		i.PacketOutputChan <- packet
 	}
-	fmt.Printf("Closed %s connection on %s (%s)\n", i.InName, fromAddr, i.ServerName)
+	log.Printf("Closed %s connection on %s (%s)\n\n", i.InName, fromAddr, i.ServerName)
 	i.InConn.Close()
 	i.Partner.Kill()
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"github.com/dcrodman/archon/util"
@@ -13,10 +14,12 @@ import (
 )
 
 var (
-	host       = flag.String("host", "127.0.0.1", "host")
-	serverHost = flag.String("serverhost", "127.0.0.1", "server host")
-	namesOnly  = flag.Bool("nameonly", false, "only print packet names instead of full data")
-	debugMode  = flag.Bool("debug", false, "verbose logging for dev")
+	host          = flag.String("host", "127.0.0.1", "host on which the proxy will listen")
+	serverHost    = flag.String("serverhost", "127.0.0.1", "host on which the server is listening")
+	logFile       = flag.String("file", "", "file to which output will be logged")
+	skipTimestamp = flag.Bool("notime", false, "don't log timestamps")
+	namesOnly     = flag.Bool("nameonly", false, "only print packet names instead of full data")
+	debugMode     = flag.Bool("debug", false, "verbose logging for dev")
 
 	// Port mappings for handling incoming client connections.
 	portMappings = map[string]string{
@@ -53,7 +56,18 @@ const displayWidth = 16
 
 func main() {
 	flag.Parse()
-	log.SetFlags(log.Ltime)
+	if !*skipTimestamp {
+		log.SetFlags(log.Ltime)
+	}
+
+	if *logFile != "" {
+		file, err := os.OpenFile(*logFile, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.ModePerm)
+		if err != nil {
+			log.Fatalf("Unable to open log file: %s", err.Error())
+		}
+		log.SetOutput(file)
+	}
+
 
 	for port, name := range portMappings {
 		proxy := &Proxy{
@@ -96,24 +110,24 @@ type Proxy struct {
 func (proxy *Proxy) Start() {
 	addr, err := net.ResolveTCPAddr("tcp", proxy.proxyHost+":"+proxy.proxyPort)
 	if err != nil {
-		log.Printf("Failed to start proxy on %s:%s; error: %s\n",
+		fmt.Printf("Failed to start proxy on %s:%s; error: %s\n",
 			proxy.proxyHost, proxy.proxyPort, err.Error())
-		os.Exit(2)
+		os.Exit(1)
 	}
 	listener, err := net.ListenTCP("tcp", addr)
 	if err != nil {
-		log.Printf("Failed to start proxy on %s:%s; error: %s\n",
+		fmt.Printf("Failed to start proxy on %s:%s; error: %s\n",
 			proxy.proxyHost, proxy.proxyPort, err.Error())
-		os.Exit(2)
+		os.Exit(1)
 	}
 	defer listener.Close()
 
-	log.Printf("Forwarding %s connections on %s:%s to %s:%s\n", proxy.serverName,
+	fmt.Printf("Forwarding %s connections on %s:%s to %s:%s\n", proxy.serverName,
 		proxy.proxyHost, proxy.proxyPort, proxy.serverHost, proxy.serverPort)
 	for {
 		conn, err := listener.AcceptTCP()
 		if err != nil {
-			log.Println("Failed to accept connection: " + err.Error())
+			fmt.Println("Failed to accept connection: " + err.Error())
 			continue
 		}
 		log.Printf("Accepted %s proxy connection on %s:%s\n",
@@ -122,7 +136,7 @@ func (proxy *Proxy) Start() {
 		// Establish a connection with the target PSO server.
 		serverConn, err := net.Dial("tcp", proxy.serverHost+":"+proxy.serverPort)
 		if err != nil {
-			log.Println("Failed to connect to server: " + err.Error())
+			fmt.Println("Failed to connect to server: " + err.Error())
 			conn.Close()
 			continue
 		}
@@ -166,12 +180,17 @@ func (proxy *Proxy) Start() {
 		go serverInterceptor.Forward()
 
 		// Send the encryption packet on to the client since we pulled it off the socket.
-		log.Println("WelcomePacket sent from Server to Client")
-		util.PrintPayload(vectorBuf[:bytes], bytes)
-		log.Println()
+		welcomePacket := &Packet{
+			size:          uint16(bytes),
+			command:       uint16(vectorBuf[0x02] >> 1),
+			decryptedData: vectorBuf,
+			server:        proxy.serverName,
+		}
+		headerStr := "WelcomePacket sent from Server to Client"
+		log.Println(formatPayload(welcomePacket, headerStr))
 
 		if err := send(serverInterceptor.OutConn, vectorBuf[:bytes], uint16(bytes)); err != nil {
-			log.Println("Failed to forward encryption packet; disconnecting")
+			fmt.Println("Failed to forward encryption packet; disconnecting")
 			conn.Close()
 			serverConn.Close()
 		}
@@ -202,15 +221,9 @@ func consumePackets(packetChan <-chan *Packet) {
 	for {
 		packet := <-packetChan
 
-		log.Printf("%s packet sent from %s to %s\n", packet.server, packet.fromName, packet.toName)
-		name := getPacketName(packet.server, packet.command)
-		if name == "" {
-			log.Printf("Unknown packet %2x\n", packet.command)
-		} else {
-			log.Println(name)
-		}
-		PrintPayload(packet.decryptedData, int(packet.size))
-		log.Println()
+		headerStr := fmt.Sprintf("%s packet sent from %s to %s\n",
+			packet.server, packet.fromName, packet.toName)
+		log.Println(formatPayload(packet, headerStr))
 
 		debug(fmt.Sprintf("Sending %d bytes from %s to %s",
 			packet.size, packet.fromName, packet.toName))
@@ -219,6 +232,62 @@ func consumePackets(packetChan <-chan *Packet) {
 			break
 		}
 	}
+}
+
+func formatPayload(packet *Packet, headerStr string) string {
+	var logBuf bytes.Buffer
+	logBuf.WriteString(headerStr)
+
+	name := getPacketName(packet.server, packet.command)
+	if name == "" {
+		logBuf.WriteString(fmt.Sprintf("Unknown packet %2x\n", packet.command))
+	} else {
+		logBuf.WriteString(name + "\n")
+	}
+
+	pktLen := int(packet.size)
+	data := packet.decryptedData
+	for rem, offset := pktLen, 0; rem > 0; rem -= displayWidth {
+		if rem < displayWidth {
+			appendPacketLine(&logBuf, data[(pktLen-rem):pktLen], rem, offset)
+		} else {
+			appendPacketLine(&logBuf, data[offset:offset+displayWidth], displayWidth, offset)
+		}
+		offset += displayWidth
+	}
+	return logBuf.String()
+}
+
+func appendPacketLine(logBuf *bytes.Buffer, data []uint8, length int, offset int) {
+	logBuf.WriteString(fmt.Sprintf("(%04X) ", offset))
+	// Print our bytes.
+	for i, j := 0, 0; i < length; i++ {
+		if j == 8 {
+			// Visual aid - spacing between groups of 8 bytes.
+			j = 0
+			logBuf.WriteString("  ")
+		}
+		logBuf.WriteString(fmt.Sprintf("%02x ", data[i]))
+		j++
+	}
+	// Fill in the gap if we don't have enough bytes to fill the line.
+	for i := length; i < displayWidth; i++ {
+		if i == 8 {
+			logBuf.WriteString("  ")
+		}
+		logBuf.WriteString("   ")
+	}
+	logBuf.WriteString("    ")
+	// Display the print characters as-is, others as periods.
+	for i := 0; i < length; i++ {
+		c := data[i]
+		if strconv.IsPrint(rune(c)) {
+			logBuf.WriteString(fmt.Sprintf("%c", data[i]))
+		} else {
+			logBuf.WriteString(".")
+		}
+	}
+	logBuf.WriteString("\n")
 }
 
 func send(conn net.Conn, data []byte, size uint16) error {
@@ -230,52 +299,6 @@ func send(conn net.Conn, data []byte, size uint16) error {
 		bytesSent += uint16(n)
 	}
 	return nil
-}
-
-// Print the contents of a packet to stdout in two columns, one for bytes and
-// the other for their ascii representation.
-func PrintPayload(data []uint8, pktLen int) {
-	for rem, offset := pktLen, 0; rem > 0; rem -= displayWidth {
-		if rem < displayWidth {
-			printPacketLine(data[(pktLen-rem):pktLen], rem, offset)
-		} else {
-			printPacketLine(data[offset:offset+displayWidth], displayWidth, offset)
-		}
-		offset += displayWidth
-	}
-}
-
-// Write one line of data to stdout.
-func printPacketLine(data []uint8, length int, offset int) {
-	fmt.Printf("(%04X) ", offset)
-	// Print our bytes.
-	for i, j := 0, 0; i < length; i++ {
-		if j == 8 {
-			// Visual aid - spacing between groups of 8 bytes.
-			j = 0
-			fmt.Print("  ")
-		}
-		fmt.Printf("%02x ", data[i])
-		j++
-	}
-	// Fill in the gap if we don't have enough bytes to fill the line.
-	for i := length; i < displayWidth; i++ {
-		if i == 8 {
-			fmt.Print("  ")
-		}
-		fmt.Print("   ")
-	}
-	fmt.Print("    ")
-	// Display the print characters as-is, others as periods.
-	for i := 0; i < length; i++ {
-		c := data[i]
-		if strconv.IsPrint(rune(c)) {
-			fmt.Printf("%c", data[i])
-		} else {
-			fmt.Print(".")
-		}
-	}
-	fmt.Println()
 }
 
 func logDebugMessages(debugChan <-chan string) {
