@@ -59,7 +59,8 @@ func le(b []byte) uint32 {
 // Returns a newly allocated PSOCrypt with randomly generated, appropriately
 // sized keys for encrypting packets over PSOPC connections.
 func NewPCCrypt(key [4]byte) *PSOCrypt {
-	crypt := &PSOCrypt{Vector: key[:]}
+	crypt := &PSOCrypt{Vector: make([]byte, 4)}
+	copy(crypt.Vector, key[:])
 	var err error
 	if crypt.cipher, err = newPCCipher(crypt.Vector); err != nil {
 		panic(err)
@@ -70,7 +71,8 @@ func NewPCCrypt(key [4]byte) *PSOCrypt {
 // Returns a newly allocated PSOCrypt with randomly generated, appropriately
 // sized keys for encrypting packets over PSOBB connections.
 func NewBBCrypt(key [48]byte) *PSOCrypt {
-	crypt := &PSOCrypt{Vector: key[:]}
+	crypt := &PSOCrypt{Vector: make([]byte, 48)}
+	copy(crypt.Vector, key[:])
 	var err error
 	if crypt.cipher, err = newCipher(crypt.Vector); err != nil {
 		panic(err)
