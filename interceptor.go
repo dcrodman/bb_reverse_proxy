@@ -47,6 +47,7 @@ func (i *Interceptor) Forward() {
 		packet.toName = i.OutName
 		packet.destConn = i.OutConn
 
+		i.rewriteRedirect(packet)
 		i.PacketOutputChan <- packet
 	}
 	log.Printf("Closed %s connection on %s (%s)\n\n", i.InName, fromAddr, i.ServerName)
@@ -114,6 +115,52 @@ func (i *Interceptor) decryptData(buf []byte, size uint16) []byte {
 	decryptedBuf := append(make([]byte, 0), buf...)
 	i.Crypt.Decrypt(decryptedBuf, uint32(size))
 	return decryptedBuf
+}
+
+// Rewrite the connection parameters to point back at the proxy.
+func (i *Interceptor) rewriteRedirect(packet *Packet) {
+	var packetStruct interface{}
+	var port uint16
+	if packet.command == PatchRedirectType {
+		var redirectPkt PatchRedirectPacket
+		util.StructFromBytes(packet.decryptedData, &redirectPkt)
+
+		copy(redirectPkt.IPAddr[:], convertedHost[:])
+		redirectPkt.Port = i.getProxyPort(redirectPkt.Port)
+		packetStruct = redirectPkt
+		port = i.convertPort(redirectPkt.Port)
+	} else if packet.command == RedirectType {
+		var redirectPkt RedirectPacket
+		util.StructFromBytes(packet.decryptedData, &redirectPkt)
+
+		copy(redirectPkt.IPAddr[:], convertedHost[:])
+		redirectPkt.Port = i.getProxyPort(redirectPkt.Port)
+		packetStruct = redirectPkt
+		port = i.convertPort(redirectPkt.Port)
+	}
+
+	if packetStruct != nil {
+		rewrittenBytes, _ := util.BytesFromStruct(packetStruct)
+		i.Crypt.Encrypt(rewrittenBytes, uint32(packet.size))
+		copy(packet.data, rewrittenBytes)
+		log.Printf("Rewrote redirect packet IP to %s:%d\n\n", *host, port)
+	}
+}
+
+func (i *Interceptor) getProxyPort(serverPort uint16) uint16 {
+	invertedPort := i.convertPort(serverPort)
+	for proxyPort, remotePort := range serverPortMappings {
+		if remotePort == invertedPort {
+			return i.convertPort(proxyPort)
+		}
+	}
+	fmt.Printf("!!!WARN: Port mappings misconfigured; no proxy port for %d!!!\n", invertedPort)
+	return invertedPort
+}
+
+// Convert from Little Endian to Big Endian (or vice versa).
+func (i *Interceptor) convertPort(port uint16) uint16 {
+	return port<<8 | port>>8
 }
 
 func (i *Interceptor) Kill() {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -22,29 +23,30 @@ var (
 	debugMode     = flag.Bool("debug", false, "verbose logging for dev")
 
 	// Port mappings for handling incoming client connections.
-	portMappings = map[string]string{
-		"11000": "PATCH",
-		"11001": "DATA",
-		"12000": "LOGIN",
-		"12001": "CHARACTER",
-		"13000": "SHIPGATE",
-		"15000": "SHIP",
-		"15001": "BLOCK1",
-		"15002": "BLOCK2",
+	portMappings = map[uint16]string{
+		11000: "PATCH",
+		11001: "DATA",
+		12000: "LOGIN",
+		12001: "CHARACTER",
+		13000: "SHIPGATE",
+		15000: "SHIP",
+		15001: "BLOCK1",
+		15002: "BLOCK2",
 	}
 
 	// Server ports to which data will be forwarded by the proxy.
-	serverPortMappings = map[string]string{
-		"11000": "11010",
-		"11001": "11011",
-		"12000": "12010",
-		"12001": "12011",
-
-		"13000": "13010",
-		"15000": "15010",
-		"15001": "15011",
-		"15002": "15012",
+	serverPortMappings = map[uint16]uint16{
+		11000: 11010,
+		11001: 11011,
+		12000: 12010,
+		12001: 12011,
+		13000: 13010,
+		15000: 15010,
+		15001: 15011,
+		15002: 15012,
 	}
+
+	convertedHost [4]byte
 
 	// Functionally a boundless unbuffered channel for packets that will be read for logging.
 	packetChan = make(chan *Packet, 500)
@@ -68,14 +70,20 @@ func main() {
 		log.SetOutput(file)
 	}
 
+	// Pre-convert the host for redirect packets.
+	parts := strings.Split(*host, ".")
+	for i := 0; i < 4; i++ {
+		tmp, _ := strconv.ParseUint(parts[i], 10, 8)
+		convertedHost[i] = uint8(tmp)
+	}
 
 	for port, name := range portMappings {
 		proxy := &Proxy{
 			serverName: name,
 			proxyHost:  *host,
-			proxyPort:  port,
+			proxyPort:  strconv.FormatUint(uint64(port), 10),
 			serverHost: *serverHost,
-			serverPort: serverPortMappings[port],
+			serverPort: strconv.FormatUint(uint64(serverPortMappings[port]), 10),
 		}
 		go proxy.Start()
 	}

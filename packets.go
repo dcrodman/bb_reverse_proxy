@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	PatchRedirectType uint16 = 0x14
+	RedirectType      uint16 = 0x19
+)
+
 type Packet struct {
 	command       uint16
 	size          uint16
@@ -31,6 +36,14 @@ type PatchWelcomePkt struct {
 	ClientVector [4]byte
 }
 
+type PatchRedirectPacket struct {
+	Size    uint16
+	Type    uint16
+	IPAddr  [4]uint8
+	Port    uint16
+	Padding uint16
+}
+
 type WelcomePkt struct {
 	Header
 	Flags        uint32
@@ -39,24 +52,33 @@ type WelcomePkt struct {
 	ClientVector [48]byte
 }
 
+type RedirectPacket struct {
+	Size    uint16
+	Type    uint16
+	Flags   uint16
+	IPAddr  [4]uint8
+	Port    uint16
+	Padding uint16
+}
+
 var packetNames = map[string]map[uint16]string{
 	"PATCH": map[uint16]string{
-		0x02: "PatchWelcomeType",
-		0x04: "PatchLoginType",
-		0x13: "PatchMessageType",
-		0x14: "PatchRedirectType",
-		0x0B: "PatchDataAckType",
-		0x0A: "PatchDirAboveType",
-		0x09: "PatchChangeDirType",
-		0x0C: "PatchCheckFileType",
-		0x0D: "PatchFileListDoneType",
-		0x0F: "PatchFileStatusType",
-		0x10: "PatchClientListDoneType",
-		0x11: "PatchUpdateFilesType",
-		0x06: "PatchFileHeaderType",
-		0x07: "PatchFileChunkType",
-		0x08: "PatchFileCompleteType",
-		0x12: "PatchUpdateCompleteType",
+		0x02:              "PatchWelcomeType",
+		0x04:              "PatchLoginType",
+		0x13:              "PatchMessageType",
+		PatchRedirectType: "PatchRedirectType",
+		0x0B:              "PatchDataAckType",
+		0x0A:              "PatchDirAboveType",
+		0x09:              "PatchChangeDirType",
+		0x0C:              "PatchCheckFileType",
+		0x0D:              "PatchFileListDoneType",
+		0x0F:              "PatchFileStatusType",
+		0x10:              "PatchClientListDoneType",
+		0x11:              "PatchUpdateFilesType",
+		0x06:              "PatchFileHeaderType",
+		0x07:              "PatchFileChunkType",
+		0x08:              "PatchFileCompleteType",
+		0x12:              "PatchUpdateCompleteType",
 	},
 	"LOGIN": map[uint16]string{
 		0x93:   "LoginType",
@@ -84,11 +106,11 @@ var packetNames = map[string]map[uint16]string{
 	},
 	// Packets found on multiple servers.
 	"COMMON": map[uint16]string{
-		0x07: "BlockListType",
-		0x83: "LobbyListType",
-		0x05: "DisconnectType",
-		0x19: "RedirectType",
-		0x10: "MenuSelectType",
+		0x07:         "BlockListType",
+		0x83:         "LobbyListType",
+		0x05:         "DisconnectType",
+		RedirectType: "RedirectType",
+		0x10:         "MenuSelectType",
 	},
 }
 
