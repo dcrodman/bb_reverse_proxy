@@ -24,8 +24,8 @@ var (
 
 	// Port mappings for handling incoming client connections.
 	portMappings = map[uint16]string{
-		11000: "PATCH",
-		11001: "DATA",
+		//11000: "PATCH",
+		//11001: "DATA",
 		12000: "LOGIN",
 		12001: "CHARACTER",
 		13000: "SHIPGATE",
@@ -208,19 +208,19 @@ func (proxy *Proxy) Start() {
 func (proxy *Proxy) buildCrypts(buf []byte) (*crypto.PSOCrypt, *crypto.PSOCrypt, uint16) {
 	var header Header
 	util.StructFromBytes(buf, &header)
-	if header.Type == 0x02 {
-		var welcomePkt PatchWelcomePkt
-		util.StructFromBytes(buf, &welcomePkt)
-		cCrypt := crypto.NewPCCrypt(welcomePkt.ClientVector)
-		sCrypt := crypto.NewPCCrypt(welcomePkt.ServerVector)
-		return cCrypt, sCrypt, 4
-	} else {
-		var welcomePkt WelcomePkt
-		util.StructFromBytes(buf, &welcomePkt)
-		cCrypt := crypto.NewBBCrypt(welcomePkt.ClientVector)
-		sCrypt := crypto.NewBBCrypt(welcomePkt.ServerVector)
-		return cCrypt, sCrypt, 8
-	}
+	// if header.Type == 0x02 {
+	// 	var welcomePkt PatchWelcomePkt
+	// 	util.StructFromBytes(buf, &welcomePkt)
+	// 	cCrypt := crypto.NewPCCrypt(welcomePkt.ClientVector)
+	// 	sCrypt := crypto.NewPCCrypt(welcomePkt.ServerVector)
+	// 	return cCrypt, sCrypt, 4
+	// } else {
+	var welcomePkt WelcomePkt
+	util.StructFromBytes(buf, &welcomePkt)
+	cCrypt := crypto.NewBBCrypt(welcomePkt.ClientVector)
+	sCrypt := crypto.NewBBCrypt(welcomePkt.ServerVector)
+	return cCrypt, sCrypt, 8
+	//}
 }
 
 // Handler for any packets intercepted by the proxy. Responsible for sending the packets to

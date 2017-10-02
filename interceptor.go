@@ -121,22 +121,23 @@ func (i *Interceptor) decryptData(buf []byte, size uint16) []byte {
 func (i *Interceptor) rewriteRedirect(packet *Packet) {
 	var packetStruct interface{}
 	var port uint16
-	if packet.command == PatchRedirectType {
-		var redirectPkt PatchRedirectPacket
-		util.StructFromBytes(packet.decryptedData, &redirectPkt)
+	// if packet.command == PatchRedirectType {
+	// 	var redirectPkt PatchRedirectPacket
+	// 	util.StructFromBytes(packet.decryptedData, &redirectPkt)
 
-		copy(redirectPkt.IPAddr[:], convertedHost[:])
-		redirectPkt.Port = i.getProxyPort(redirectPkt.Port)
-		packetStruct = redirectPkt
-		port = i.convertPort(redirectPkt.Port)
-	} else if packet.command == RedirectType {
+	// 	copy(redirectPkt.IPAddr[:], convertedHost[:])
+	// 	redirectPkt.Port = i.getProxyPort(redirectPkt.Port)
+	// 	packetStruct = redirectPkt
+	// 	port = i.convertPort(redirectPkt.Port)
+	// }
+
+	if packet.command == RedirectType {
 		var redirectPkt RedirectPacket
 		util.StructFromBytes(packet.decryptedData, &redirectPkt)
 
 		copy(redirectPkt.IPAddr[:], convertedHost[:])
 		redirectPkt.Port = i.getProxyPort(redirectPkt.Port)
 		packetStruct = redirectPkt
-		port = i.convertPort(redirectPkt.Port)
 	}
 
 	if packetStruct != nil {
@@ -148,10 +149,12 @@ func (i *Interceptor) rewriteRedirect(packet *Packet) {
 }
 
 func (i *Interceptor) getProxyPort(serverPort uint16) uint16 {
-	invertedPort := i.convertPort(serverPort)
+	//invertedPort := i.convertPort(serverPort)
+	invertedPort := serverPort
 	for proxyPort, remotePort := range serverPortMappings {
 		if remotePort == invertedPort {
-			return i.convertPort(proxyPort)
+			//return i.convertPort(proxyPort)
+			return proxyPort
 		}
 	}
 	fmt.Printf("!!!WARN: Port mappings misconfigured; no proxy port for %d!!!\n", invertedPort)
@@ -159,9 +162,9 @@ func (i *Interceptor) getProxyPort(serverPort uint16) uint16 {
 }
 
 // Convert from Little Endian to Big Endian (or vice versa).
-func (i *Interceptor) convertPort(port uint16) uint16 {
-	return port<<8 | port>>8
-}
+// func (i *Interceptor) convertPort(port uint16) uint16 {
+// 	return port<<8 | port>>8
+// }
 
 func (i *Interceptor) Kill() {
 	i.stop = true

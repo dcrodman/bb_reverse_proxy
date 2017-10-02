@@ -55,7 +55,7 @@ type WelcomePkt struct {
 type RedirectPacket struct {
 	Size    uint16
 	Type    uint16
-	Flags   uint16
+	Flags   uint32
 	IPAddr  [4]uint8
 	Port    uint16
 	Padding uint16
