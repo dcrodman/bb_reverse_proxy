@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"github.com/dcrodman/archon/util"
@@ -15,13 +14,6 @@ import (
 )
 
 var (
-	host          = flag.String("host", "127.0.0.1", "host on which the proxy will listen")
-	serverHost    = flag.String("serverhost", "127.0.0.1", "host on which the server is listening")
-	logFile       = flag.String("file", "", "file to which output will be logged")
-	skipTimestamp = flag.Bool("notime", false, "don't log timestamps")
-	namesOnly     = flag.Bool("nameonly", false, "only print packet names instead of full data")
-	debugMode     = flag.Bool("debug", false, "verbose logging for dev")
-
 	// Port mappings for handling incoming client connections.
 	portMappings = map[uint16]string{
 		//11000: "PATCH",
@@ -36,8 +28,8 @@ var (
 
 	// Server ports to which data will be forwarded by the proxy.
 	serverPortMappings = map[uint16]uint16{
-		11000: 11010,
-		11001: 11011,
+		//11000: 11010,
+		//11001: 11011,
 		12000: 12010,
 		12001: 12011,
 		13000: 13010,
@@ -45,16 +37,25 @@ var (
 		15001: 15011,
 		15002: 15012,
 	}
+)
 
+var (
+	host          = flag.String("host", "127.0.0.1", "host on which the proxy will listen")
+	serverHost    = flag.String("serverhost", "127.0.0.1", "host on which the server is listening")
+	logFile       = flag.String("file", "", "file to which output will be logged")
+	skipTimestamp = flag.Bool("notime", false, "don't log timestamps")
+	namesOnly     = flag.Bool("nameonly", false, "only print packet names instead of full data")
+	debugMode     = flag.Bool("debug", false, "verbose logging for dev")
+)
+
+var (
+	// Byte representation of the proxy IP injected into the redirect packet.
 	convertedHost [4]byte
-
 	// Functionally a boundless unbuffered channel for packets that will be read for logging.
 	packetChan = make(chan *Packet, 500)
 	// Used for ordered printing of debug messages to stdout.
 	debugChan = make(chan string, 100)
 )
-
-const displayWidth = 16
 
 func main() {
 	flag.Parse()
@@ -77,6 +78,7 @@ func main() {
 		convertedHost[i] = uint8(tmp)
 	}
 
+	// Start all of our proxies on the specified ports.
 	for port, name := range portMappings {
 		proxy := &Proxy{
 			serverName: name,
@@ -101,6 +103,13 @@ func main() {
 func debug(message string) {
 	if *debugMode {
 		debugChan <- message
+	}
+}
+
+func logDebugMessages(debugChan <-chan string) {
+	for {
+		message := <-debugChan
+		log.Printf("%s\n", message)
 	}
 }
 
@@ -221,97 +230,4 @@ func (proxy *Proxy) buildCrypts(buf []byte) (*crypto.PSOCrypt, *crypto.PSOCrypt,
 	sCrypt := crypto.NewBBCrypt(welcomePkt.ServerVector)
 	return cCrypt, sCrypt, 8
 	//}
-}
-
-// Handler for any packets intercepted by the proxy. Responsible for sending the packets to
-// their intended destination as well as doing any logging we care about.
-func consumePackets(packetChan <-chan *Packet) {
-	for {
-		packet := <-packetChan
-
-		headerStr := fmt.Sprintf("%s packet sent from %s to %s\n",
-			packet.server, packet.fromName, packet.toName)
-		log.Println(formatPayload(packet, headerStr))
-
-		debug(fmt.Sprintf("Sending %d bytes from %s to %s",
-			packet.size, packet.fromName, packet.toName))
-		if err := send(packet.destConn, packet.data, packet.size); err != nil {
-			fmt.Printf("Failed to send packet: %s\n", err.Error())
-			break
-		}
-	}
-}
-
-func formatPayload(packet *Packet, headerStr string) string {
-	var logBuf bytes.Buffer
-	logBuf.WriteString(headerStr)
-
-	name := getPacketName(packet.server, packet.command)
-	if name == "" {
-		logBuf.WriteString(fmt.Sprintf("Unknown packet %2x\n", packet.command))
-	} else {
-		logBuf.WriteString(name + "\n")
-	}
-
-	pktLen := int(packet.size)
-	data := packet.decryptedData
-	for rem, offset := pktLen, 0; rem > 0; rem -= displayWidth {
-		if rem < displayWidth {
-			appendPacketLine(&logBuf, data[(pktLen-rem):pktLen], rem, offset)
-		} else {
-			appendPacketLine(&logBuf, data[offset:offset+displayWidth], displayWidth, offset)
-		}
-		offset += displayWidth
-	}
-	return logBuf.String()
-}
-
-func appendPacketLine(logBuf *bytes.Buffer, data []uint8, length int, offset int) {
-	logBuf.WriteString(fmt.Sprintf("(%04X) ", offset))
-	// Print our bytes.
-	for i, j := 0, 0; i < length; i++ {
-		if j == 8 {
-			// Visual aid - spacing between groups of 8 bytes.
-			j = 0
-			logBuf.WriteString("  ")
-		}
-		logBuf.WriteString(fmt.Sprintf("%02x ", data[i]))
-		j++
-	}
-	// Fill in the gap if we don't have enough bytes to fill the line.
-	for i := length; i < displayWidth; i++ {
-		if i == 8 {
-			logBuf.WriteString("  ")
-		}
-		logBuf.WriteString("   ")
-	}
-	logBuf.WriteString("    ")
-	// Display the print characters as-is, others as periods.
-	for i := 0; i < length; i++ {
-		c := data[i]
-		if strconv.IsPrint(rune(c)) {
-			logBuf.WriteString(fmt.Sprintf("%c", data[i]))
-		} else {
-			logBuf.WriteString(".")
-		}
-	}
-	logBuf.WriteString("\n")
-}
-
-func send(conn net.Conn, data []byte, size uint16) error {
-	for bytesSent := uint16(0); bytesSent < size; {
-		n, err := conn.Write(data[bytesSent:size])
-		if err != nil {
-			return err
-		}
-		bytesSent += uint16(n)
-	}
-	return nil
-}
-
-func logDebugMessages(debugChan <-chan string) {
-	for {
-		message := <-debugChan
-		log.Printf("%s\n", message)
-	}
 }
