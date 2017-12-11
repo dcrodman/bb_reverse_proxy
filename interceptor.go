@@ -6,11 +6,16 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dcrodman/archon/util"
 	crypto "github.com/dcrodman/bb_reverse_proxy/encryption"
 )
+
+const headerSize = 8
 
 var errSessionEnded = errors.New("Session ended")
 
@@ -19,94 +24,95 @@ var errSessionEnded = errors.New("Session ended")
 // side and one for the proxy->server.
 type Interceptor struct {
 	ServerName string
-	InConn     net.Conn
-	InName     string
-	OutConn    net.Conn
-	OutName    string
-
-	Crypt            *crypto.PSOCrypt
-	HeaderSize       uint16
-	PacketOutputChan chan<- *Packet
-
-	Partner *Interceptor
-	stop    bool
+	Name       string
+	RecvConn   net.Conn
+	RecvCrypt  *crypto.PSOCrypt
+	SendConn   net.Conn
+	Partner    *Interceptor
+	stop       int32
 }
 
-func (i *Interceptor) Forward() {
-	fromAddr := i.InConn.RemoteAddr().String()
+// Start runs the packet processing loop for the interceptor's connection.
+func (i *Interceptor) Start() {
 	for {
 		packet, err := i.readNextPacket()
 		if err == errSessionEnded || err == io.EOF {
 			break
 		} else if err != nil {
-			fmt.Printf("Error reading from %s: %s\n", fromAddr, err.Error())
+			fmt.Printf("Error reading from %s: %s\n", i.RecvConn.RemoteAddr().String(), err.Error())
 			break
 		}
 
-		packet.server = i.ServerName
-		packet.fromName = i.InName
-		packet.toName = i.OutName
-		packet.destConn = i.OutConn
-
 		i.rewriteRedirect(packet)
-		i.PacketOutputChan <- packet
+
+		packet.sendFunc = func() {
+			debug(fmt.Sprintf("Sending %d bytes to %s", packet.size, packet.fromName))
+			if err := i.send(packet.data, packet.size); err != nil {
+				fmt.Printf("Failed to send packet: %s\n", err.Error())
+			}
+		}
+		packetChan <- packet
 	}
-	log.Printf("Closed %s connection on %s (%s)\n\n", i.InName, fromAddr, i.ServerName)
-	i.InConn.Close()
+
+	i.RecvConn.Close()
 	i.Partner.Kill()
+	log.Printf("Closed %s connection on %s (%s)\n\n",
+		i.Name, i.RecvConn.RemoteAddr().String(), i.ServerName)
 }
 
-func (i *Interceptor) readNextPacket() (*Packet, error) {
+func (i *Interceptor) readNextPacket() (*PacketMsg, error) {
 	// Just read in the header so we know how much data we're expecting.
-	buf := make([]byte, i.HeaderSize)
-	debug("Awaiting header from " + i.InName)
-	err := i.readBytes(buf, i.HeaderSize)
+	buf := make([]byte, headerSize)
+	debug("Awaiting header from " + i.Name)
+	err := i.readBytes(buf, headerSize)
 	if err != nil {
 		return nil, err
 	}
 
-	decryptedBuf := i.decryptData(buf, i.HeaderSize)
+	decryptedBuf := i.decryptData(buf, headerSize)
 	var packetHeader Header
 	util.StructFromBytes(decryptedBuf, &packetHeader)
 
 	// Now we read in the rest of the packet and append it to what we have.
-	remainingSize := packetHeader.Size - i.HeaderSize
-	remainingSize += remainingSize % i.HeaderSize
+	remainingSize := packetHeader.Size - headerSize
+	remainingSize += remainingSize % headerSize
 
 	remBuf := make([]byte, remainingSize)
-	debug("Awaiting rest of packet from " + i.InName)
+	debug("Awaiting rest of packet from " + i.Name)
 	err = i.readBytes(remBuf, remainingSize)
 	if err != nil {
 		return nil, err
 	}
 	decryptedRemBuf := i.decryptData(remBuf, remainingSize)
 
-	packet := Packet{
+	packet := PacketMsg{
 		command:       packetHeader.Type,
-		size:          remainingSize + i.HeaderSize,
+		size:          remainingSize + headerSize,
 		data:          append(buf, remBuf...),
 		decryptedData: append(decryptedBuf, decryptedRemBuf...),
 		timestamp:     time.Now(),
+		server:        i.ServerName,
+		fromName:      i.Name,
 	}
 	return &packet, err
 }
 
 func (i *Interceptor) readBytes(buf []byte, bytesToRead uint16) error {
-	debug(fmt.Sprintf("%d total bytes to read from %s", bytesToRead, i.InName))
+	debug(fmt.Sprintf("%d total bytes to read from %s", bytesToRead, i.Name))
 	for bytesReceived := uint16(0); bytesReceived < bytesToRead; {
 		// Timeouts give us an opportunity to check if the connection is dead.
-		i.InConn.SetReadDeadline(time.Now().Add(time.Second))
-		bytesRead, err := i.InConn.Read(buf[bytesReceived:bytesToRead])
+		i.RecvConn.SetReadDeadline(time.Now().Add(time.Second))
+		bytesRead, err := i.RecvConn.Read(buf[bytesReceived:bytesToRead])
 
 		if err != nil {
 			netErr, ok := err.(net.Error)
-			if ok && netErr.Timeout() && i.stop {
+			if ok && netErr.Timeout() && atomic.LoadInt32(&i.stop) > 0 {
 				return errSessionEnded
 			} else if !ok {
 				return err
 			}
 		}
-		debug(fmt.Sprintf("%d bytes of %d read from %s", bytesRead, bytesToRead, i.InName))
+		debug(fmt.Sprintf("%d bytes of %d read from %s", bytesRead, bytesToRead, i.Name))
 		bytesReceived += uint16(bytesRead)
 	}
 	return nil
@@ -114,12 +120,12 @@ func (i *Interceptor) readBytes(buf []byte, bytesToRead uint16) error {
 
 func (i *Interceptor) decryptData(buf []byte, size uint16) []byte {
 	decryptedBuf := append(make([]byte, 0), buf...)
-	i.Crypt.Decrypt(decryptedBuf, uint32(size))
+	i.RecvCrypt.Decrypt(decryptedBuf, uint32(size))
 	return decryptedBuf
 }
 
 // Rewrite the connection parameters to point back at the proxy.
-func (i *Interceptor) rewriteRedirect(packet *Packet) {
+func (i *Interceptor) rewriteRedirect(packet *PacketMsg) {
 	var packetStruct interface{}
 	var port uint16
 
@@ -134,23 +140,40 @@ func (i *Interceptor) rewriteRedirect(packet *Packet) {
 
 	if packetStruct != nil {
 		rewrittenBytes, _ := util.BytesFromStruct(packetStruct)
-		i.Crypt.Encrypt(rewrittenBytes, uint32(packet.size))
+		i.RecvCrypt.Encrypt(rewrittenBytes, uint32(packet.size))
 		copy(packet.data, rewrittenBytes)
 		log.Printf("Rewrote redirect packet IP to %s:%d\n\n", *host, port)
 	}
 }
 
+// Takes the port provided by the server for a redirect and returns the corresponding
+// proxy port set up to capture traffic.
 func (i *Interceptor) getProxyPort(serverPort uint16) uint16 {
-	invertedPort := serverPort
-	for proxyPort, remotePort := range serverPortMappings {
-		if remotePort == invertedPort {
-			return proxyPort
+	convertedPort := strconv.FormatUint(uint64(serverPort), 10)
+	for e := proxies.Front(); e != nil; e = e.Next() {
+		proxy := e.Value.(*Proxy)
+		if strings.HasSuffix(proxy.remoteHost, convertedPort) {
+			splitHost := strings.Split(proxy.host, ":")
+			conv, _ := strconv.ParseUint(splitHost[len(splitHost)-1], 10, 16)
+			return uint16(conv)
 		}
 	}
-	fmt.Printf("!!!WARN: Port mappings misconfigured; no proxy port for %d!!!\n", invertedPort)
-	return invertedPort
+	fmt.Printf("WARN: Port mappings misconfigured; no proxy port for %d\n", serverPort)
+	return serverPort
 }
 
+func (i *Interceptor) send(data []byte, size uint16) error {
+	for bytesSent := uint16(0); bytesSent < size; {
+		n, err := i.SendConn.Write(data[bytesSent:size])
+		if err != nil {
+			return err
+		}
+		bytesSent += uint16(n)
+	}
+	return nil
+}
+
+// Kill will cause the Interceptor to stop processing packets and return from Start().
 func (i *Interceptor) Kill() {
-	i.stop = true
+	atomic.AddInt32(&i.stop, 1)
 }

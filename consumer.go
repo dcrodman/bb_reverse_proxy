@@ -4,40 +4,37 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"net"
 	"strconv"
 )
 
 const displayWidth = 16
 
+var packetChan = make(chan *PacketMsg, 500)
+
 // Handler for any packets intercepted by the proxy. Responsible for sending the packets to
 // their intended destination as well as doing any logging we care about.
-func consumePackets(packetChan <-chan *Packet) {
+func consumePackets(packetChan <-chan *PacketMsg) {
 	for {
 		packet := <-packetChan
-
-		headerStr := fmt.Sprintf("%s packet sent from %s to %s\n",
-			packet.server, packet.fromName, packet.toName)
-		log.Println(formatPayload(packet, headerStr))
-
-		debug(fmt.Sprintf("Sending %d bytes from %s to %s",
-			packet.size, packet.fromName, packet.toName))
-		if err := send(packet.destConn, packet.data, packet.size); err != nil {
-			fmt.Printf("Failed to send packet: %s\n", err.Error())
-			break
-		}
+		log.Println(formatPayload(packet, fmt.Sprintf(
+			"%s %s packet\n", packet.server, packet.fromName)))
+		packet.sendFunc()
 	}
 }
 
-func formatPayload(packet *Packet, headerStr string) string {
+func formatPayload(packet *PacketMsg, headerStr string) string {
 	var logBuf bytes.Buffer
 	logBuf.WriteString(headerStr)
 
 	name := getPacketName(packet.server, packet.command)
 	if name == "" {
-		logBuf.WriteString(fmt.Sprintf("Unknown packet %2x\n", packet.command))
+		logBuf.WriteString(fmt.Sprintf("Unknown packet %02x\n", packet.command))
 	} else {
 		logBuf.WriteString(name + "\n")
+	}
+
+	if *namesOnly {
+		return logBuf.String()
 	}
 
 	pktLen := int(packet.size)
@@ -83,15 +80,4 @@ func appendPacketLine(logBuf *bytes.Buffer, data []uint8, length int, offset int
 		}
 	}
 	logBuf.WriteString("\n")
-}
-
-func send(conn net.Conn, data []byte, size uint16) error {
-	for bytesSent := uint16(0); bytesSent < size; {
-		n, err := conn.Write(data[bytesSent:size])
-		if err != nil {
-			return err
-		}
-		bytesSent += uint16(n)
-	}
-	return nil
 }

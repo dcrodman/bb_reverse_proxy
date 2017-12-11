@@ -1,16 +1,16 @@
 package main
 
 import (
-	"net"
 	"time"
 )
 
 const (
-	PatchRedirectType uint16 = 0x14
-	RedirectType      uint16 = 0x19
+	RedirectType uint16 = 0x19
 )
 
-type Packet struct {
+// PacketMsg contains metadata about a received packet along with the raw
+// bytes of the packet as taken off of the wire.
+type PacketMsg struct {
 	command       uint16
 	size          uint16
 	data          []byte
@@ -19,8 +19,7 @@ type Packet struct {
 	timestamp time.Time
 	server    string
 	fromName  string
-	toName    string
-	destConn  net.Conn
+	sendFunc  func()
 }
 
 type Header struct {
@@ -61,26 +60,13 @@ type RedirectPacket struct {
 	Padding uint16
 }
 
+// Packet aliases expressed in big-endian.
 var packetNames = map[string]map[uint16]string{
-	"PATCH": map[uint16]string{
-		0x02:              "PatchWelcomeType",
-		0x04:              "PatchLoginType",
-		0x13:              "PatchMessageType",
-		PatchRedirectType: "PatchRedirectType",
-		0x0B:              "PatchDataAckType",
-		0x0A:              "PatchDirAboveType",
-		0x09:              "PatchChangeDirType",
-		0x0C:              "PatchCheckFileType",
-		0x0D:              "PatchFileListDoneType",
-		0x0F:              "PatchFileStatusType",
-		0x10:              "PatchClientListDoneType",
-		0x11:              "PatchUpdateFilesType",
-		0x06:              "PatchFileHeaderType",
-		0x07:              "PatchFileChunkType",
-		0x08:              "PatchFileCompleteType",
-		0x12:              "PatchUpdateCompleteType",
-	},
 	"LOGIN": map[uint16]string{
+		0x93: "LoginType",
+		0xE6: "LoginSecurityType",
+	},
+	"CHARACTER": map[uint16]string{
 		0x93:   "LoginType",
 		0xE6:   "LoginSecurityType",
 		0x1A:   "LoginClientMessageType",
@@ -106,6 +92,7 @@ var packetNames = map[string]map[uint16]string{
 	},
 	// Packets found on multiple servers.
 	"COMMON": map[uint16]string{
+		0x03:         "WelcomeType",
 		0x07:         "BlockListType",
 		0x83:         "LobbyListType",
 		0x05:         "DisconnectType",
