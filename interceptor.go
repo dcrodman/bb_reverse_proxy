@@ -85,9 +85,13 @@ func (i *Interceptor) readNextPacket() (*PacketMsg, error) {
 	}
 	decryptedRemBuf := i.decryptData(remBuf, remainingSize)
 
+	for (len(buf)+len(remBuf))%8 > 0 {
+		remBuf = append(remBuf, 0)
+	}
+
 	packet := PacketMsg{
 		command:       packetHeader.Type,
-		size:          remainingSize + headerSize,
+		size:          uint16(len(buf) + len(remBuf)),
 		data:          append(buf, remBuf...),
 		decryptedData: append(decryptedBuf, decryptedRemBuf...),
 		timestamp:     time.Now(),
